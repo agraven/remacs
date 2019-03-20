@@ -18,6 +18,7 @@ use crate::{
     fileio::{expand_file_name, find_file_name_handler},
     frames::LispFrameRef,
     hashtable::LispHashTableRef,
+    intervals::IntervalRef,
     lisp::{ExternalPtr, LispMiscRef, LispObject, LispStructuralEqual, LiveBufferIter},
     lists::{car, cdr, list, member, rassq, setcar},
     lists::{CarIter, LispConsCircularChecks, LispConsEndChecks},
@@ -38,7 +39,7 @@ use crate::{
     },
     remacs_sys::{
         buffer_defaults, equal_kind, pvec_type, EmacsInt, Lisp_Buffer, Lisp_Buffer_Local_Value,
-        Lisp_Misc_Type, Lisp_Overlay, Lisp_Type, Vbuffer_alist, Vrun_hooks,
+        Lisp_Interval, Lisp_Misc_Type, Lisp_Overlay, Lisp_Type, Vbuffer_alist, Vrun_hooks,
     },
     remacs_sys::{Fcopy_sequence, Fget_text_property, Fnconc, Fnreverse},
     remacs_sys::{
@@ -226,6 +227,10 @@ impl LispBufferRef {
             }
         }
         self.local_flags[idx] = val;
+    }
+
+    pub fn set_intervals(&mut self, intervals: IntervalRef) {
+        unsafe { (*self.text).intervals = intervals.as_ptr() as *mut Lisp_Interval };
     }
 
     // Characters, positions and byte positions.

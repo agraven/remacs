@@ -92,6 +92,7 @@ mod fonts;
 mod hashtable;
 mod indent;
 mod interactive;
+mod intervals;
 mod keyboard;
 mod keymap;
 mod libm;

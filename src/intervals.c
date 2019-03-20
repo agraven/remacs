@@ -82,38 +82,6 @@ copy_interval_parent (INTERVAL d, INTERVAL s)
   d->up_obj = s->up_obj;
 }
 
-/* Create the root interval of some object, a buffer or string.  */
-
-INTERVAL
-create_root_interval (Lisp_Object parent)
-{
-  INTERVAL new;
-
-  new = make_interval ();
-
-  if (! STRINGP (parent))
-    {
-      new->total_length = (BUF_Z (XBUFFER (parent))
-			   - BUF_BEG (XBUFFER (parent)));
-      eassert (TOTAL_LENGTH (new) >= 0);
-      set_buffer_intervals (XBUFFER (parent), new);
-      new->position = BEG;
-    }
-  else
-    {
-      CHECK_IMPURE (parent, XSTRING (parent));
-      new->total_length = SCHARS (parent);
-      eassert (TOTAL_LENGTH (new) >= 0);
-      set_string_intervals (parent, new);
-      new->position = 0;
-    }
-  eassert (LENGTH (new) > 0);
-
-  set_interval_object (new, parent);
-
-  return new;
-}
-
 /* Make the interval TARGET have exactly the properties of SOURCE.  */
 
 void
@@ -428,28 +396,6 @@ balance_possible_root_interval (INTERVAL interval)
     }
 
   return interval;
-}
-
-/* Balance the interval tree TREE.  Balancing is by weight
-   (the amount of text).  */
-
-static INTERVAL
-balance_intervals_internal (register INTERVAL tree)
-{
-  /* Balance within each side.  */
-  if (tree->left)
-    balance_intervals_internal (tree->left);
-  if (tree->right)
-    balance_intervals_internal (tree->right);
-  return balance_an_interval (tree);
-}
-
-/* Advertised interface to balance intervals.  */
-
-INTERVAL
-balance_intervals (INTERVAL tree)
-{
-  return tree ? balance_intervals_internal (tree) : NULL;
 }
 
 /* Rebalance text properties of B.  */

@@ -40,10 +40,13 @@ use libc::{c_char, c_int, c_uchar, c_uint, c_void, memset, ptrdiff_t, size_t};
 
 use crate::{
     hashtable::LispHashTableRef,
+    intervals::IntervalRef,
     lisp::{ExternalPtr, LispObject, LispStructuralEqual},
     obarray::LispObarrayRef,
     remacs_sys::Qstringp,
-    remacs_sys::{char_bits, equal_kind, EmacsDouble, EmacsInt, Lisp_String, Lisp_Type},
+    remacs_sys::{
+        char_bits, equal_kind, EmacsDouble, EmacsInt, Lisp_Interval, Lisp_String, Lisp_Type,
+    },
     remacs_sys::{compare_string_intervals, empty_unibyte_string, lisp_string_width},
     symbols::LispSymbolRef,
 };
@@ -177,6 +180,11 @@ impl LispStringRef {
 
     pub fn set_byte(&mut self, idx: ptrdiff_t, elt: c_uchar) {
         unsafe { ptr::write(self.data_ptr().offset(idx), elt) };
+    }
+
+    pub fn set_intervals(&mut self, intervals: IntervalRef) {
+        let mut s = unsafe { self.u.s };
+        s.intervals = intervals.as_ptr() as *mut Lisp_Interval;
     }
 }
 
