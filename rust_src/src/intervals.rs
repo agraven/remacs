@@ -103,20 +103,20 @@ impl IntervalRef {
     }
 
     /// Get the interval's left child if it has one.
-    pub fn get_left_child(self) -> Option<Self> {
+    pub fn get_left(self) -> Option<Self> {
         Self::from_ptr(self.left as *mut libc::c_void)
     }
 
-    /// Get the interval's left child if it has one.
-    pub fn get_right_child(self) -> Option<Self> {
+    /// Get the interval's right child if it has one.
+    pub fn get_right(self) -> Option<Self> {
         Self::from_ptr(self.right as *mut libc::c_void)
     }
 
-    pub unsafe fn get_left_unchecked(self) -> Self {
+    pub fn get_left_raw(self) -> Self {
         Self::new(self.left)
     }
 
-    pub unsafe fn get_right_unchecked(self) -> Self {
+    pub fn get_right_raw(self) -> Self {
         Self::new(self.right)
     }
 
@@ -126,11 +126,11 @@ impl IntervalRef {
     }
 
     pub fn left_total_length(self) -> isize {
-        self.get_left_child().map_or(0, |left| left.total_length)
+        self.get_left().map_or(0, |left| left.total_length)
     }
 
     pub fn right_total_length(self) -> isize {
-        self.get_right_child().map_or(0, |right| right.total_length)
+        self.get_right().map_or(0, |right| right.total_length)
     }
 
     /// Check if two intervals have the same properties
@@ -172,6 +172,16 @@ impl IntervalRef {
         unimplemented!()
     }
 
+    pub fn iter(self) -> DepthIter {
+        DepthIter {
+            stack: if !self.is_null() {
+                vec![self]
+            } else {
+                Vec::new()
+            },
+        }
+    }
+
     /// Make the parent of `other` whatever the parent of `self` is, regardless
     /// of the type.
     fn copy_parent_to(self, other: &mut Self) {
@@ -203,7 +213,7 @@ impl IntervalRef {
     ///```
     pub fn rotate_right(&mut self) {
         let a = self;
-        let mut b = unsafe { a.get_left_unchecked() };
+        let mut b = a.get_left_raw();
         let mut c = ExternalPtr::new(b.right);
         let old_total = a.total_length;
 
@@ -252,7 +262,7 @@ impl IntervalRef {
     ///    c               c
     pub fn rotate_left(&mut self) {
         let a = self;
-        let mut b = unsafe { a.get_right_unchecked() };
+        let mut b = a.get_right_raw();
         let mut c = ExternalPtr::new(b.left);
         let old_total = a.total_length;
 
@@ -292,6 +302,34 @@ impl IntervalRef {
         a.replace_ptr(b.as_mut());
     }
 
+    /// Traverse the interval tree, performing `function` on each node. No
+    /// guarantee is made about the order of traversal.
+    pub fn traverse_unordered(
+        self,
+        function: fn(IntervalRef, *mut libc::c_void),
+        arg: *mut libc::c_void,
+    ) {
+        for tree in self.iter() {
+            function(tree, arg);
+        }
+    }
+
+    /// Traverse the interval tree, performing `function` on each node. The
+    /// traversal is depth first from left to right.
+    pub fn traverse(
+        self,
+        mut position: isize,
+        function: fn(IntervalRef, LispObject),
+        arg: LispObject,
+    ) {
+        for mut tree in self.iter() {
+            position += tree.left_total_length();
+            tree.position = position;
+            function(tree, arg);
+            position += tree.length();
+        }
+    }
+
     /// Balance the interval tree with the assumption that the subtrees
     /// themselves are already balanced.
     pub fn balance(&mut self) {
@@ -303,7 +341,7 @@ impl IntervalRef {
 
             if old_diff > 0 {
                 // Since the left child is longer, there must be one.
-                let left = unsafe { self.get_left_unchecked() };
+                let left = self.get_left_raw();
                 let new_diff = self.total_length - left.total_length + left.right_total_length()
                     - left.left_total_length();
 
@@ -311,10 +349,10 @@ impl IntervalRef {
                     break;
                 }
                 self.rotate_right();
-                unsafe { self.get_right_unchecked().balance() };
+                self.get_right_raw().balance();
             } else if old_diff < 0 {
                 // Since the left child is longer, there must be one.
-                let right = unsafe { self.get_right_unchecked() };
+                let right = self.get_right_raw();
                 let new_diff = self.total_length - right.total_length + right.left_total_length()
                     - right.right_total_length();
 
@@ -322,7 +360,7 @@ impl IntervalRef {
                     break;
                 }
                 self.rotate_left();
-                unsafe { self.get_left_unchecked().balance() };
+                self.get_left_raw().balance();
             } else {
                 break;
             }
@@ -360,6 +398,31 @@ impl IntervalRef {
     }
 }
 
+pub struct DepthIter {
+    stack: Vec<IntervalRef>,
+}
+
+impl Iterator for DepthIter {
+    type Item = IntervalRef;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.stack.is_empty() {
+            None
+        } else {
+            let current = self.stack.pop();
+            for tree in current.iter() {
+                for t in tree.get_right_raw().iter() {
+                    self.stack.push(t)
+                }
+                for t in tree.get_left_raw().iter() {
+                    self.stack.push(t)
+                }
+            }
+            current
+        }
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn create_root_interval(parent: LispObject) -> IntervalRef {
     IntervalRef::create_root(parent)
@@ -369,9 +432,9 @@ pub extern "C" fn create_root_interval(parent: LispObject) -> IntervalRef {
 #[no_mangle]
 pub extern "C" fn balance_intervals(tree: IntervalRef) -> IntervalRef {
     fn recursion(mut tree: IntervalRef) -> IntervalRef {
-        if let Some(left) = tree.get_left_child() {
+        if let Some(left) = tree.get_left() {
             recursion(left);
-        } else if let Some(right) = tree.get_right_child() {
+        } else if let Some(right) = tree.get_right() {
             recursion(right);
         }
         tree.balance();
@@ -382,4 +445,23 @@ pub extern "C" fn balance_intervals(tree: IntervalRef) -> IntervalRef {
     } else {
         recursion(tree)
     }
+}
+
+#[no_mangle]
+pub extern "C" fn traverse_intervals_noorder(
+    tree: IntervalRef,
+    function: fn(IntervalRef, *mut libc::c_void),
+    arg: *mut libc::c_void,
+) {
+    tree.traverse_unordered(function, arg);
+}
+
+#[no_mangle]
+pub extern "C" fn traverse_intervals(
+    tree: IntervalRef,
+    position: isize,
+    function: fn(IntervalRef, LispObject),
+    arg: LispObject,
+) {
+    tree.traverse(position, function, arg);
 }

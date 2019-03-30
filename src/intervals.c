@@ -187,45 +187,6 @@ intervals_equal (INTERVAL i0, INTERVAL i1)
 }
 
 
-/* Traverse an interval tree TREE, performing FUNCTION on each node.
-   No guarantee is made about the order of traversal.
-   Pass FUNCTION two args: an interval, and ARG.  */
-
-void
-traverse_intervals_noorder (INTERVAL tree, void (*function) (INTERVAL, void *),
-			    void *arg)
-{
-  /* Minimize stack usage.  */
-  while (tree)
-    {
-      (*function) (tree, arg);
-      if (!tree->right)
-	tree = tree->left;
-      else
-	{
-	  traverse_intervals_noorder (tree->left, function, arg);
-	  tree = tree->right;
-	}
-    }
-}
-
-/* Traverse an interval tree TREE, performing FUNCTION on each node.
-   Pass FUNCTION two args: an interval, and ARG.  */
-
-void
-traverse_intervals (INTERVAL tree, ptrdiff_t position,
-		    void (*function) (INTERVAL, Lisp_Object), Lisp_Object arg)
-{
-  while (tree)
-    {
-      traverse_intervals (tree->left, position, function, arg);
-      position += LEFT_TOTAL_LENGTH (tree);
-      tree->position = position;
-      (*function) (tree, arg);
-      position += LENGTH (tree); tree = tree->right;
-    }
-}
-
 /* Assuming that a left child exists, perform the following operation:
 
      A		  B
