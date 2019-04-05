@@ -18,7 +18,7 @@ use crate::{
     fileio::{expand_file_name, find_file_name_handler},
     frames::LispFrameRef,
     hashtable::LispHashTableRef,
-    intervals::IntervalRef,
+    intervalref::IntervalRef,
     lisp::{ExternalPtr, LispMiscRef, LispObject, LispStructuralEqual, LiveBufferIter},
     lists::{car, cdr, list, member, rassq, setcar},
     lists::{CarIter, LispConsCircularChecks, LispConsEndChecks},

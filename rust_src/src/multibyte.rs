@@ -40,7 +40,7 @@ use libc::{c_char, c_int, c_uchar, c_uint, c_void, memset, ptrdiff_t, size_t};
 
 use crate::{
     hashtable::LispHashTableRef,
-    intervals::IntervalRef,
+    intervalref::IntervalRef,
     lisp::{ExternalPtr, LispObject, LispStructuralEqual},
     obarray::LispObarrayRef,
     remacs_sys::Qstringp,
