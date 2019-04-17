@@ -7,7 +7,7 @@ use remacs_macros::lisp_fn;
 use crate::{
     lisp::{ExternalPtr, LispObject},
     lists::{LispConsCircularChecks, LispConsEndChecks},
-    remacs_sys::Vframe_list,
+    remacs_sys::{Vframe_list, last_nonminibuf_frame},
     remacs_sys::{candidate_frame, delete_frame as c_delete_frame, frame_dimension, output_method},
     remacs_sys::{pvec_type, selected_frame as current_frame, Lisp_Frame, Lisp_Type},
     remacs_sys::{Qframe_live_p, Qframep, Qicon, Qnil, Qns, Qpc, Qt, Qw32, Qx},
@@ -670,6 +670,15 @@ pub fn visible_frame_list() -> LispObject {
 pub fn frame_face_alist(frame: LispFrameLiveOrSelected) -> LispObject {
     let frame_ref: LispFrameRef = frame.into();
     frame_ref.face_alist
+}
+
+#[lisp_fn]
+pub fn last_nonminibuffer_frame() -> Option<LispFrameRef> {
+    unsafe {
+        last_nonminibuf_frame.as_mut().map(|last| {
+            LispFrameRef::new(last)
+        })
+    }
 }
 
 include!(concat!(env!("OUT_DIR"), "/frames_exports.rs"));

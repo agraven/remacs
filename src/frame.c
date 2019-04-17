@@ -53,7 +53,7 @@ Lisp_Object selected_frame;
 /* A frame which is not just a mini-buffer, or NULL if there are no such
    frames.  This is usually the most recent such frame that was selected.  */
 
-static struct frame *last_nonminibuf_frame;
+struct frame *last_nonminibuf_frame;
 
 /* False means there are no visible garbaged frames.  */
 bool frame_garbaged;
@@ -1488,18 +1488,6 @@ candidate_frame (Lisp_Object candidate, Lisp_Object frame, Lisp_Object minibuf)
   return Qnil;
 }
 
-DEFUN ("last-nonminibuffer-frame", Flast_nonminibuf_frame,
-       Slast_nonminibuf_frame, 0, 0, 0,
-       doc: /* Return last non-minibuffer frame selected. */)
-  (void)
-{
-  Lisp_Object frame = Qnil;
-
-  if (last_nonminibuf_frame)
-    XSETFRAME (frame, last_nonminibuf_frame);
-
-  return frame;
-}
 
 /**
  * other_frames:
@@ -5608,7 +5596,6 @@ iconify the top level frame instead.  */);
   defsubr (&Sselect_frame);
   defsubr (&Sframe_parent);
   defsubr (&Sframe_ancestor_p);
-  defsubr (&Slast_nonminibuf_frame);
   defsubr (&Smouse_position);
   defsubr (&Smouse_pixel_position);
   defsubr (&Sset_mouse_position);

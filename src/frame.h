@@ -569,6 +569,8 @@ struct frame
 #endif
 };
 
+extern struct frame *last_nonminibuf_frame;
+
 /* Most code should use these functions to set Lisp fields in struct frame.  */
 
 INLINE Lisp_Object
