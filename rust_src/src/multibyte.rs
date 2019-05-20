@@ -127,10 +127,12 @@ impl LispStringRef {
         s.data as *const c_char
     }
 
+    /*
     pub fn set_intervals(&mut self, interval: *mut Lisp_Interval) {
         let mut s = unsafe { self.u.s };
         s.intervals = interval;
     }
+    */
 
     pub fn as_slice(&self) -> &[u8] {
         unsafe { slice::from_raw_parts(self.u.s.data as *const u8, self.len_bytes() as usize) }

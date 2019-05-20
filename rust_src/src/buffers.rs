@@ -178,7 +178,7 @@ impl LispBufferRef {
         b.zv_marker_ = Qnil;
 
         let mut name: LispStringRef = copy_sequence(name.into()).force_string();
-        name.set_intervals(ptr::null_mut());
+        name.set_intervals(IntervalRef::new(ptr::null_mut()));
         b.name_ = name.into();
         b.undo_list_ = if name.byte_at(0) != b' ' { Qnil } else { Qt };
 

@@ -3,13 +3,15 @@
 
 use std::mem;
 
-use crate::{lisp::LispObject, remacs_sys::Qnil};
+use crate::{fns, lisp::LispObject, remacs_sys::Qnil};
 
-/*#[derive(Clone)]
-enum Parent<'a> {
-    Interval(&'a Interval<'a>),
+#[derive(Copy, Clone)]
+pub enum Parent {
+    /// The interval has a parent interval
+    Interval(*mut Interval),
+    /// The interval belongs to an object
     Object(LispObject),
-}*/
+}
 
 #[derive(Clone)]
 pub struct Interval {
@@ -17,9 +19,8 @@ pub struct Interval {
     left: Option<Box<Interval>>,
     /// Right child interval.
     right: Option<Box<Interval>>,
-    ///// The parent interval or LispObject containing this tree.
-    //parent: Parent<'a>,
-    parent: Option<LispObject>,
+    /// The parent interval or LispObject containing this tree.
+    parent: Parent,
 
     node: Node,
 }
@@ -44,33 +45,164 @@ pub struct Node {
     pub plist: LispObject,
 }
 
+impl Node {
+    fn new() -> Node {
+        Node {
+            total_length: 0,
+            position: 0,
+            write_protect: false,
+            visible: false,
+            front_sticky: false,
+            rear_sticky: false,
+            plist: Qnil,
+        }
+    }
+}
+
 impl Interval {
+    pub fn new(parent: Parent) -> Interval {
+        Interval {
+            left: None,
+            right: None,
+            parent,
+            node: Node::new(),
+        }
+    }
+
+    /// Whether the interval has a left child
     pub fn has_left(&self) -> bool {
         self.left.is_some()
     }
 
+    /// Whether the interval has a right child
     pub fn has_right(&self) -> bool {
         self.right.is_some()
     }
 
+    /// Whether the interval has any child
     pub fn has_child(&self) -> bool {
         self.has_left() || self.has_right()
     }
 
+    /// Whether the interval has both children
     pub fn has_children(&self) -> bool {
-        self.has_left() || self.has_right()
+        self.has_left() && self.has_right()
+    }
+
+    /// Whether the interval has a parent interval
+    pub fn has_parent(&self) -> bool {
+        match self.parent {
+            Parent::Interval(_) => true,
+            Parent::Object(_) => false,
+        }
+    }
+
+    /// Whether the interval belongs to an object
+    pub fn has_object(&self) -> bool {
+        match self.parent {
+            Parent::Interval(_) => false,
+            Parent::Object(_) => true,
+        }
+    }
+
+    /// Whether the interval's property list is empty
+    pub fn is_default(&self) -> bool {
+        self.node.plist.is_nil()
+    }
+
+    pub fn is_left_child(&self) -> bool {
+        match self.parent {
+            Parent::Object(_) => false,
+            Parent::Interval(parent) => unsafe { &*parent }.left().map_or(false, |left| {
+                left as *const Interval == self as *const Interval
+            }),
+        }
+    }
+
+    pub fn is_right_child(&self) -> bool {
+        match self.parent {
+            Parent::Object(_) => false,
+            Parent::Interval(parent) => unsafe { &*parent }.right().map_or(false, |right| {
+                right as *const Interval == self as *const Interval
+            }),
+        }
     }
 
     pub fn length(&self) -> usize {
         self.node.total_length - self.left_total_length() - self.right_total_length()
     }
 
+    pub fn left<'a>(&'a self) -> Option<&'a Interval> {
+        self.left.as_ref().map(|left| &**left)
+    }
+
+    pub fn right<'a>(&'a self) -> Option<&'a Interval> {
+        self.right.as_ref().map(|right| &**right)
+    }
+
+    /// Get a reference to the parent interval of this interval
+    pub fn parent<'a>(&'a self) -> Option<&'a Interval> {
+        match self.parent {
+            Parent::Interval(parent) => unsafe { Some(&*parent) },
+            Parent::Object(_) => None,
+        }
+    }
+
+    /// Get a mutable reference to the parent interval of this interval
+    pub fn parent_mut<'a>(&'a mut self) -> Option<&'a mut Interval> {
+        match self.parent {
+            Parent::Interval(parent) => unsafe { Some(&mut *parent) },
+            Parent::Object(_) => None,
+        }
+    }
+
+    /// Get the lisp object that owns this interval
+    pub fn object(&self) -> Option<LispObject> {
+        match self.parent {
+            Parent::Object(obj) => Some(obj),
+            Parent::Interval(_) => None,
+        }
+    }
+
+    /// Get a mutable reference to the interval's left child
     pub fn left_mut<'a>(&'a mut self) -> Option<&'a mut Interval> {
         self.left.as_mut().map(|left| &mut **left)
     }
 
+    /// Get a mutable reference to the interval's right child
     pub fn right_mut<'a>(&'a mut self) -> Option<&'a mut Interval> {
         self.right.as_mut().map(|right| &mut **right)
+    }
+
+    /// Take the interval's left child, leaving None its place
+    pub fn take_left(&mut self) -> Option<Interval> {
+        self.left.take().map(|boxed| *boxed)
+    }
+
+    pub fn take_right(&mut self) -> Option<Interval> {
+        self.right.take().map(|boxed| *boxed)
+    }
+
+    /// Set the interval's left child
+    pub fn set_left(&mut self, mut left: Interval) {
+        left.set_parent(self);
+        self.left = Some(Box::new(left));
+    }
+
+    /// Set the interval's right child
+    pub fn set_right(&mut self, mut right: Interval) {
+        right.set_parent(self);
+        self.right = Some(Box::new(right));
+    }
+
+    /// Set the parent interval of this interval
+    fn set_parent(&mut self, parent: *mut Interval) {
+        self.parent = Parent::Interval(parent)
+    }
+
+    /// Set the object this interval belongs to
+    fn set_object(&mut self, object: LispObject) {
+        self.parent = Parent::Object(object)
     }
 
     /// Total length of the left child interval tree.
@@ -85,38 +217,81 @@ impl Interval {
             .map_or(0, |right| right.node.total_length)
     }
 
-    /// Find the (lexicographically) succeeding interval, i.e. the leftmost child
-    /// of this interval's right child.
+    /// Return the proper position for the first character described by the
+    /// interval tree. Returns 1 if the parent is a buffer, and 0 if the
+    /// parent is a string or none
+    fn start_pos(&self) -> usize {
+        match self.parent {
+            Parent::Interval(_) => 0,
+            Parent::Object(parent) => match parent.as_buffer() {
+                Some(buffer) => buffer.beg() as usize,
+                None => 0,
+            },
+        }
+    }
+
+    /// Find the (lexicographically) succeeding interval, i.e. either the leftmost child
+    /// of this interval's right child or .
     ///
     /// Updates the `position` field based on that of self (see find_interval).
     pub fn next<'a>(&'a mut self) -> Option<&'a mut Interval> {
         let next_position = self.node.position + self.length();
 
-        self.right_mut().take().map_or(None, |mut next| loop {
+        self.right_mut().map(|mut next| loop {
             if next.has_left() {
                 next = next.left_mut().unwrap();
                 continue;
             }
             next.node.position = next_position;
-            break Some(next);
-        })
+            return Some(next);
+        });
+
+        // Iterate parents until first left child found
+        let mut i = self;
+        loop {
+            if i.is_left_child() {
+                let parent = i.parent_mut().unwrap();
+                parent.node.position = next_position;
+                return Some(parent);
+            }
+            match i.parent_mut() {
+                Some(parent) => i = parent,
+                None => break,
+            }
+        }
+        None
     }
 
     /// Find the (lexicographically) preceding interval, i.e. the rightmost
-    /// child of this interval's right child.
+    /// child of this interval's left child.
     ///
     /// Updates the `position` field based on that of self (see find_interval).
     pub fn prev<'a>(&'a mut self) -> Option<&'a mut Interval> {
         let position = self.node.position;
 
-        self.left_mut().take().map_or(None, |mut prev| loop {
+        // Get rightmost child of left child
+        self.left_mut().map(|mut prev| loop {
             if prev.has_right() {
                 prev = prev.right_mut().unwrap();
                 continue;
             }
             prev.node.position = position - prev.length();
-            break Some(prev);
-        })
+            return Some(prev);
+        });
+
+        // Iterate parents until right child found
+        let mut i = self;
+        loop {
+            if i.is_right_child() {
+                let parent = i.parent_mut().unwrap();
+                parent.node.position = position - parent.length();
+                break Some(parent);
+            }
+            match i.parent_mut() {
+                Some(parent) => i = parent,
+                None => break None,
+            }
+        }
     }
 
     /// Find the interval containing `position` in the tree. `position` is a
@@ -131,7 +306,7 @@ impl Interval {
         // The distance from the left edge of the subtree to position
         let mut relative_position = position;
 
-        if let Some(buffer) = self.parent.map(|parent| parent.as_buffer()) {
+        if let Some(buffer) = self.object().and_then(LispObject::as_buffer) {
             relative_position -= buffer.beg() as usize;
         }
 
@@ -159,36 +334,36 @@ impl Interval {
     ///```
     ///    A               B
     ///   / \	          / \
-    ///  d   B    =>     A   e
+    ///      B    =>     A
     ///     / \         / \
-    ///    c   e       d   c
+    ///    c               c
     ///```
+    /// If the interval is the child of another interval, the caller must
+    /// reinsert the rotated tree back into the same child node.
     pub fn rotate_left_owned(mut self) -> Interval {
-        debug_assert!(self.length() > 0);
-
         let old_total = self.node.total_length;
         debug_assert!(old_total > 0);
+        debug_assert!(self.length() > 0);
 
-        let mut b = match self.right {
-            Some(right) => *right,
+        let mut b = match self.take_right() {
+            Some(right) => right,
             None => return self,
         };
+        let c = b.take_left();
         debug_assert!(b.length() > 0);
 
-        let c = b.left;
-
-        // TODO: parent handling
+        let parent = self.parent;
 
         // Make A the parent of C.
-        self.right = c;
-        //c.set_parent(a)
+        if let Some(c) = c {
+            self.set_right(c)
+        }
 
         // Make B the parent of A.
-        b.left = Some(Box::new(self));
-        //a.set_parent(b)
+        b.set_left(self);
+        let mut a = b.left.as_mut().unwrap();
 
         // A's total length is decreased by the length of B and the left child of A.
-        let mut a = b.right.as_mut().unwrap();
         a.node.total_length -= b.node.total_length - a.right_total_length();
         debug_assert!(a.node.total_length > 0);
         debug_assert!(a.length() > 0);
@@ -197,6 +372,19 @@ impl Interval {
         b.node.total_length = old_total;
         debug_assert!(b.length() > 0);
 
+        // Make the parent of A point to B (parent interval's child is not
+        // altered, as we have ownership of it and assume it's temporarily
+        // taken, and will thus be reinserted after the operation).
+        match parent {
+            Parent::Interval(parent) => b.set_parent(parent),
+            Parent::Object(obj) => {
+                if let Some(_buffer) = obj.as_buffer() {
+                    //buffer.set_intervals(&mut b)
+                } else if let Some(_string) = obj.as_string() {
+                    //string.set_intervals(&mut b)
+                }
+            }
+        }
         b
     }
 
@@ -209,6 +397,7 @@ impl Interval {
     ///    c   e       d   c
     ///```
     pub fn rotate_left(&mut self) {
+        let self_ptr: *mut Interval = self;
         let old_total = self.node.total_length;
         debug_assert!(old_total > 0);
         debug_assert!(self.length() > 0);
@@ -222,8 +411,12 @@ impl Interval {
         mem::swap(&mut self.left, &mut self.right);
 
         let a = self.left.as_mut().unwrap();
+        let a_ptr: *mut Interval = &mut **a;
         // Swap d and e.
         mem::swap(&mut self.right, &mut a.right);
+        // Update d and e's parents
+        self.right.as_mut().map(|right| right.set_parent(self_ptr));
+        a.right.as_mut().map(|right| right.set_parent(a_ptr));
         // Swap d and c.
         mem::swap(&mut a.left, &mut a.right);
 
@@ -248,31 +441,29 @@ impl Interval {
     ///
     /// Returns an error with the original value if left child isn't present.
     pub fn rotate_right_owned(mut self) -> Interval {
-        debug_assert!(self.length() > 0);
-
         let old_total = self.node.total_length;
         debug_assert!(old_total > 0);
+        debug_assert!(self.length() > 0);
 
-        let mut b = match self.left {
-            Some(left) => *left,
+        let mut b = match self.take_left() {
+            Some(left) => left,
             None => return self,
         };
+        let c = b.take_right();
         debug_assert!(b.length() > 0);
 
-        let c = b.right;
-
-        // TODO: parent handling
+        let parent = self.parent;
 
         // Make A the parent of C
-        self.left = c;
-        //c.set_parent(a)
+        if let Some(c) = c {
+            self.set_left(c);
+        }
 
         // Make B the parent of A.
-        b.right = Some(Box::new(self));
-        //a.set_parent(b)
+        b.set_right(self);
+        let mut a = b.right.as_mut().unwrap();
 
         // A's total length is decreased by the length of B and the left child of A.
-        let mut a = b.right.as_mut().unwrap();
         a.node.total_length -= b.node.total_length - a.left_total_length();
         debug_assert!(a.node.total_length > 0);
         debug_assert!(a.length() > 0);
@@ -281,6 +472,19 @@ impl Interval {
         b.node.total_length = old_total;
         debug_assert!(b.length() > 0);
 
+        // Make the parent of A point to B (parent interval's child is not
+        // altered, as we have ownership of it and assume it's temporarily
+        // taken, and will thus be reinserted after the operation).
+        match parent {
+            Parent::Interval(parent) => b.set_parent(parent),
+            Parent::Object(obj) => {
+                if let Some(_buffer) = obj.as_buffer() {
+                    //buffer.set_intervals(&mut b)
+                } else if let Some(_string) = obj.as_string() {
+                    //string.set_intervals(&mut b)
+                }
+            }
+        }
         b
     }
 
@@ -293,6 +497,7 @@ impl Interval {
     ///     c		  c
     ///```
     pub fn rotate_right(&mut self) {
+        let self_ptr: *mut Interval = self;
         let old_total = self.node.total_length;
         debug_assert!(old_total > 0);
         debug_assert!(self.length() > 0);
@@ -306,8 +511,12 @@ impl Interval {
         mem::swap(&mut self.left, &mut self.right);
 
         let a = self.right.as_mut().unwrap();
+        let a_ptr: *mut Interval = &mut **a;
         // Swap d and e.
         mem::swap(&mut self.left, &mut a.left);
+        // Update d and e's parents
+        self.left.as_mut().map(|left| left.set_parent(self_ptr));
+        a.left.as_mut().map(|left| left.set_parent(a_ptr));
         // Swap d and c.
         mem::swap(&mut a.left, &mut a.right);
 
@@ -360,6 +569,8 @@ impl Interval {
         }
     }
 
+    /// Balance the interval tree with the assumption that the subtrees
+    /// themselves are already balanced.
     pub fn balance(&mut self) {
         self.left.as_mut().map(|left| left.balance());
         self.right.as_mut().map(|right| right.balance());
@@ -369,29 +580,115 @@ impl Interval {
     /// Balance the interval, potentially putting it back into its parent
     /// `LispObject`.
     pub fn balance_possible_root(&mut self) {
-        if let Some(parent) = self.parent {
+        if let Some(parent) = self.object() {
             self.balance_self();
-            if let Some(buffer) = parent.as_buffer() {
+            if let Some(_buffer) = parent.as_buffer() {
                 //buffer.set_intervals(&mut self)
-            } else if let Some(string) = parent.as_string() {
+            } else if let Some(_string) = parent.as_string() {
                 //string.set_intervals(&mut self)
             }
         }
     }
 
+    /// Split the interval into two pieces, starting the second piece at
+    /// the character position `offset`, counting from 0, relative the
+    /// interval's position. The new left-hand piece (first lexicographically)
+    /// is returned.
+    ///
+    /// The size and position fields of the two intervals are set based on the
+    /// ones of the original interval. The property list of the new interval is
+    /// reset, so it's up to the caller to modify the returned value
+    /// appropriately.
+    ///
+    /// The position of the interval is not changed, if it's a root, it stays a
+    /// root after the operation.
+    pub fn split_left<'a>(&'a mut self, offset: usize) -> &'a mut Interval {
+        let mut new = Interval::new(Parent::Interval(self));
+        let new_length = offset;
+
+        new.node.position = self.node.position;
+        self.node.position += offset;
+
+        match self.take_left() {
+            None => {
+                new.node.total_length = new_length;
+                assert!(new.length() > 0)
+            }
+            Some(mut left) => {
+                // Insert the new node between self and its left child
+                new.node.total_length = new_length + left.node.total_length;
+                left.set_parent(&mut new);
+                new.set_left(left);
+                new.balance_self();
+            }
+        }
+        self.set_left(new);
+        self.balance_possible_root();
+
+        self.left_mut().unwrap()
+    }
+
+    /// Split the interval into two pieces, starting the second piece at
+    /// the character position `offset`, counting from 0, relative the
+    /// interval's position. The new right-hand piece (second lexicographically)
+    /// is returned.
+    ///
+    /// The size and position fields of the two intervals are set based on the
+    /// ones of the original interval. The property list of the new interval is
+    /// reset, so it's up to the caller to modify the returned value
+    /// appropriately.
+    ///
+    /// The position of the interval is not changed, if it's a root, it stays a
+    /// root after the operation.
+    pub fn split_right<'a>(&'a mut self, offset: usize) -> &'a mut Interval {
+        let mut new = Interval::new(Parent::Interval(self));
+        let position = self.node.position;
+        let new_length = self.length() - offset;
+
+        new.node.position = position + offset;
+
+        match self.take_right() {
+            None => {
+                new.node.total_length = new_length;
+                assert!(new.length() > 0);
+            }
+            Some(mut right) => {
+                // Insert the new node between self and its right child.
+                let right_length = right.node.total_length;
+                right.set_parent(&mut new);
+                new.set_right(right);
+                new.node.total_length = new_length + right_length;
+                new.balance_self();
+            }
+        }
+        self.set_right(new);
+        self.balance_possible_root();
+
+        self.right_mut().unwrap()
+    }
+
+    /// Make the interval have exactly the properties of `source`.
+    pub fn copy_properties(&mut self, source: &Interval) {
+        if self.is_default() && source.is_default() {
+            return;
+        }
+        self.node.write_protect = source.node.write_protect;
+        self.node.visible = source.node.visible;
+        self.node.front_sticky = source.node.front_sticky;
+        self.node.rear_sticky = source.node.rear_sticky;
+        self.node.plist = fns::copy_sequence(source.node.plist);
+    }
+
     /// Reset the interval to its default no-property state
     pub fn reset(&mut self) {
-        *self = Interval {
-            left: None,
-            right: None,
-            node: Node {
-                total_length: 0,
-                position: 0,
-                plist: Qnil,
-                ..self.node
-            },
-            ..*self
-        }
+        self.left = None;
+        self.right = None;
+        self.node = Node {
+            total_length: 0,
+            position: 0,
+            plist: Qnil,
+            ..self.node
+        };
     }
 }
 
@@ -434,5 +731,21 @@ impl<'a> Iterator for IterMut<'a> {
             tree.left.as_mut().map(|l| self.stack.push(l));
             &mut tree.node
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Interval, Parent};
+    use crate::remacs_sys::Qnil;
+
+    #[test]
+    fn is_child() {
+        let mut parent = Interval::new(Parent::Object(Qnil));
+        let parent_ptr: *mut Interval = &mut parent;
+        let child = Interval::new(Parent::Interval(parent_ptr));
+        parent.set_right(child);
+        assert!(parent.right().unwrap().is_right_child());
+        assert!(!parent.right().unwrap().is_left_child());
     }
 }
