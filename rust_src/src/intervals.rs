@@ -187,17 +187,25 @@ impl Interval {
     pub fn set_left(&mut self, mut left: Interval) {
         left.set_parent(self);
         self.left = Some(Box::new(left));
+        self.left_mut().unwrap().update_parents();
     }
 
     /// Set the interval's right child
     pub fn set_right(&mut self, mut right: Interval) {
         right.set_parent(self);
         self.right = Some(Box::new(right));
+        self.right_mut().unwrap().update_parents();
     }
 
     /// Set the parent interval of this interval
     fn set_parent(&mut self, parent: *mut Interval) {
         self.parent = Parent::Interval(parent)
+    }
+
+    fn update_parents(&mut self) {
+        let self_ptr: *mut Interval = self;
+        self.left_mut().map(|left| left.set_parent(self_ptr));
+        self.right_mut().map(|right| right.set_parent(self_ptr));
     }
 
     /// Set the object this interval belongs to
@@ -215,6 +223,10 @@ impl Interval {
         self.right
             .as_ref()
             .map_or(0, |right| right.node.total_length)
+    }
+
+    fn last_pos(&self) -> usize {
+        self.node.position + self.length()
     }
 
     /// Return the proper position for the first character described by the
@@ -328,6 +340,75 @@ impl Interval {
                 break tree;
             }
         }
+    }
+
+    /// Find the interval in the tree containing `position`. Nodes' `position`
+    /// values are updated if the tree is traversed downwards.
+    ///
+    /// To increase speed and reduce complexity, it's assumed that the position
+    /// of this interval and its parents are up to date.
+    pub fn update<'a>(&'a mut self, position: usize) -> &'a mut Interval {
+        let mut i = self;
+        loop {
+            if position < i.node.position {
+                let i_position = i.node.position;
+                // Move left.
+                if position >= i_position - i.left_total_length() {
+                    let left = i.left_mut().unwrap();
+                    left.node.position =
+                        i_position - left.node.total_length + left.left_total_length();
+                    i = left;
+                } else if i.has_parent() {
+                    i = i.parent_mut().unwrap();
+                } else {
+                    error!("Point before start of properties");
+                }
+                continue;
+            } else if position >= i.last_pos() {
+                // Move right.
+                let last_pos = i.last_pos();
+                if position < last_pos + i.right_total_length() {
+                    let mut right = i.right_mut().unwrap();
+                    right.node.position = last_pos + right.left_total_length();
+                    i = right;
+                } else if i.has_parent() {
+                    i = i.parent_mut().unwrap();
+                } else {
+                    error!("Point {} after end of properties", position);
+                }
+                continue;
+            } else {
+                break i;
+            }
+        }
+    }
+
+    /// Delete the node from its tree by merging its subtrees into one subtree.
+    fn delete(&mut self) {
+        let new = match (self.take_left(), self.take_right()) {
+            (None, None) => return,
+            (Some(left), None) => left,
+            (None, Some(right)) => right,
+            (Some(left), Some(mut right)) => {
+                let amount = left.node.total_length;
+                right.node.total_length += amount;
+                // Update total lengths, and make left the new subtree's
+                // leftmost child
+                let mut i = &mut right;
+                while i.has_left() {
+                    i = i.left_mut().unwrap();
+                    i.node.total_length += amount;
+                }
+                i.set_left(left);
+                debug_assert!(i.length() > 0);
+                debug_assert!(right.length() > 0);
+                right
+            }
+        };
+        self.left = new.left;
+        self.right = new.right;
+        self.update_parents();
+        self.node = new.node;
     }
 
     /// If a right child exists, perform the following operation:
@@ -667,6 +748,13 @@ impl Interval {
         self.right_mut().unwrap()
     }
 
+    /// Merge the interval with its lexicographic predecessor. This intervals
+    /// properties are lost, as it's removed from the tree.
+    pub fn merge_left(&mut self) {
+        // Find the preceding interval
+        if let Some(mut predecessor) = self.left_mut() {}
+    }
+
     /// Make the interval have exactly the properties of `source`.
     pub fn copy_properties(&mut self, source: &Interval) {
         if self.is_default() && source.is_default() {
@@ -700,6 +788,10 @@ pub struct IterMut<'a> {
     stack: Vec<&'a mut Interval>,
 }
 
+pub struct IntoIter {
+    stack: Vec<Interval>,
+}
+
 impl Interval {
     pub fn iter(&self) -> Iter {
         Iter { stack: vec![self] }
@@ -707,6 +799,10 @@ impl Interval {
 
     pub fn iter_mut(&mut self) -> IterMut {
         IterMut { stack: vec![self] }
+    }
+
+    pub fn into_iter(self) -> IntoIter {
+        IntoIter { stack: vec![self] }
     }
 }
 
@@ -734,18 +830,107 @@ impl<'a> Iterator for IterMut<'a> {
     }
 }
 
+impl Iterator for IntoIter {
+    type Item = Node;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.stack.pop().map(|mut interval| {
+            interval.take_right().map(|r| self.stack.push(r));
+            interval.take_left().map(|l| self.stack.push(l));
+            interval.node
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::ptr;
+
     use super::{Interval, Parent};
     use crate::remacs_sys::Qnil;
 
+    fn test_interval() -> Interval {
+        Interval::new(Parent::Object(Qnil))
+    }
+
+    #[test]
+    fn is_default() {
+        let interval = test_interval();
+        assert!(interval.is_default());
+    }
+
     #[test]
     fn is_child() {
-        let mut parent = Interval::new(Parent::Object(Qnil));
-        let parent_ptr: *mut Interval = &mut parent;
-        let child = Interval::new(Parent::Interval(parent_ptr));
+        // Test with right child
+        let mut parent = test_interval();
+        let child = test_interval();
         parent.set_right(child);
         assert!(parent.right().unwrap().is_right_child());
         assert!(!parent.right().unwrap().is_left_child());
+
+        // Test with right child reassigned as left
+        let child = parent.take_right().unwrap();
+        parent.set_left(child);
+        assert!(!parent.left().unwrap().is_right_child());
+        assert!(parent.left().unwrap().is_left_child());
+    }
+
+    #[test]
+    fn length() {
+        // Test with no children
+        let mut interval = test_interval();
+        interval.node.total_length = 10;
+        assert_eq!(interval.length(), 10);
+
+        // Test with one child
+        let mut child = test_interval();
+        child.node.total_length = 3;
+        interval.set_left(child);
+        assert_eq!(interval.length(), 7);
+
+        // Test with two children
+        let mut child = test_interval();
+        child.node.total_length = 5;
+        interval.set_right(child);
+        assert_eq!(interval.length(), 2)
+    }
+
+    #[test]
+    fn rotate_owned() {
+        // TODO: length assertions
+        let mut interval = test_interval();
+        interval.node.total_length = 10;
+        let mut child = test_interval();
+        child.node.total_length = 5;
+        interval.set_left(child);
+
+        // Test rotating right.
+        let mut interval = interval.rotate_right_owned();
+        assert!(interval.has_right());
+        assert!(interval.right().unwrap().is_right_child());
+
+        // Test rotating left.
+        let interval = interval.rotate_left_owned();
+        assert!(interval.has_left());
+        assert!(interval.left().unwrap().is_left_child());
+    }
+
+    #[test]
+    fn rotate_borrowed() {
+        let mut interval = test_interval();
+        interval.node.total_length = 10;
+        let mut child = test_interval();
+        child.node.total_length = 5;
+        interval.set_left(child);
+
+        // Test rotating right
+        interval.rotate_right();
+        assert!(interval.has_right());
+        assert!(interval.right().unwrap().is_right_child());
+
+        // Test rotating left
+        interval.rotate_left();
+        assert!(interval.has_left());
+        assert!(interval.left().unwrap().is_left_child());
     }
 }
